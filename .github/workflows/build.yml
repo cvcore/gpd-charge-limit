@@ -1,0 +1,83 @@
+# Two jobs, one per supported installation path.
+#
+# The dev machine for this driver runs NixOS, which cannot exercise DKMS
+# locally at all -- so the DKMS job is the only test that path ever gets.
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Builds the module through the flake against more than one kernel. Kernel
+  # sets are referred to symbolically (linuxPackages / linuxPackages_latest)
+  # rather than by version: nixpkgs deletes kernels once they go EOL upstream,
+  # so a pinned list like linux_6_14 turns into eval errors within months.
+  nix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - gpd-charge-limit          # nixpkgs default kernel
+          - gpd-charge-limit-latest   # newest kernel nixpkgs ships
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+      - run: nix build .#${{ matrix.package }} --no-link --print-out-paths
+
+  # Exercises the DKMS path end to end against the distro's own headers.
+  dkms:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install DKMS and kernel headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dkms build-essential \
+            "linux-headers-$(uname -r)"
+
+      - name: dkms add / build / install
+        run: |
+          version=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
+          sudo cp -r "$PWD" "/usr/src/gpd-charge-limit-${version}"
+          sudo dkms add     -m gpd-charge-limit -v "${version}"
+          sudo dkms build   -m gpd-charge-limit -v "${version}"
+          sudo dkms install -m gpd-charge-limit -v "${version}"
+
+      - name: Assert the module landed and carries the right metadata
+        run: |
+          ko=$(find /lib/modules/"$(uname -r)" -name 'gpd_charge_limit.ko*' -print -quit)
+          test -n "$ko" || { echo "::error::module not installed"; exit 1; }
+          echo "installed: $ko"
+          modinfo "$ko"
+          # The DMI alias is what autoloads the driver on real hardware; if it
+          # ever disappears the module would silently never load.
+          modinfo "$ko" | grep -q 'G1617-02' \
+            || { echo "::error::DMI alias missing"; exit 1; }
+
+  # Style gate: the stated goal is eventual mainline submission, so the source
+  # must stay checkpatch-clean.
+  checkpatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch checkpatch
+        run: |
+          base=https://raw.githubusercontent.com/torvalds/linux/master/scripts
+          curl -sSfL -O "$base/checkpatch.pl"
+          curl -sSfL -O "$base/spelling.txt"
+          curl -sSfL -O "$base/const_structs.checkpatch"
+          chmod +x checkpatch.pl
+      - run: ./checkpatch.pl --no-tree -f gpd_charge_limit.c
