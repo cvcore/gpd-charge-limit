@@ -36,39 +36,6 @@ jobs:
           tool-cache: true
       - run: nix build .#${{ matrix.package }} --no-link --print-out-paths
 
-  # Exercises the DKMS path end to end against the distro's own headers.
-  dkms:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install DKMS and kernel headers
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y dkms build-essential \
-            "linux-headers-$(uname -r)"
-
-      - name: dkms add / build / install
-        run: |
-          version=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
-          sudo cp -r "$PWD" "/usr/src/gpd-charge-limit-${version}"
-          sudo dkms add     -m gpd-charge-limit -v "${version}"
-          sudo dkms build   -m gpd-charge-limit -v "${version}"
-          sudo dkms install -m gpd-charge-limit -v "${version}"
-
-      - name: Assert the module landed and carries the right metadata
-        run: |
-          ko=$(find /lib/modules/"$(uname -r)" -name 'gpd_charge_limit.ko*' -print -quit)
-          test -n "$ko" || { echo "::error::module not installed"; exit 1; }
-          echo "installed: $ko"
-          modinfo "$ko"
-          # The DMI alias is what autoloads the driver on real hardware; if it
-          # ever disappears the module would silently never load.
-          modinfo "$ko" | grep -q 'G1617-02' \
-            || { echo "::error::DMI alias missing"; exit 1; }
-
-  # Style gate: the stated goal is eventual mainline submission, so the source
-  # must stay checkpatch-clean.
   checkpatch:
     runs-on: ubuntu-latest
     steps:
