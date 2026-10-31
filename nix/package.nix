@@ -28,10 +28,18 @@ stdenv.mkDerivation {
     "KERNELDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
   ];
 
+  # Install through kbuild, not the Makefile's plain `install`: modules_install
+  # is what signs the module and emits the .ko.cer aggregateModules requires.
   installFlags = [
-    "DESTDIR=${placeholder "out"}"
-    "INSTALL_MOD_DIR=/lib/modules/${kernel.modDirVersion}/extra"
+    "-C"
+    "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
+    "M=$(PWD)"
+    "INSTALL_MOD_PATH=${placeholder "out"}"
+    "INSTALL_MOD_DIR=extra"
+    "DEPMOD=true"
   ];
+
+  installTargets = [ "modules_install" ];
 
   meta = {
     description = "Battery charge limit driver for the GPD Win Mini 2025 (G1617-02)";
